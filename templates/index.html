@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>QR AirDrop</title>
+    <style>
+      body{font-family:system-ui,Arial;margin:24px;background:#f5f7fa;color:#17202a}
+      .container{max-width:680px;margin:0 auto}
+      section{background:#fff;border:1px solid #d9e0e7;border-radius:8px;padding:16px;margin:16px 0}
+      textarea{box-sizing:border-box;width:100%;min-height:120px;padding:10px;font:inherit;resize:vertical}
+      button{padding:9px 14px;margin-top:10px;cursor:pointer}
+      .progress{width:100%;background:#eee;border-radius:6px;height:18px;overflow:hidden}
+      .bar{height:100%;width:0;background:#4caf50}
+      #clipboardFiles{border:2px dashed #a8b7c7;border-radius:8px;padding:16px;min-height:70px;overflow-wrap:anywhere}
+      #clipboardFiles:empty:before{content:attr(data-placeholder);color:#667}
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>QR AirDrop</h1>
+      <p>Send Files, Screenshots, or copied text to Windows.</p>
+      <p>Works with iOS Apple Shortcut <strong>Send to Windows</strong></p>
+      <p>Created by: Stephen | +60167222208</p>
+
+      <section>
+        <h2>Send a file</h2>
+        <label for="file">File</label>
+        <input id="file" type="file" />
+        <button id="upload">Upload</button>
+      </section>
+
+      <section>
+        <h2>Receive a file from Windows</h2>
+        <ol>
+          <li>In the WindowsQR desktop window, choose <strong>Choose Files for iPhone</strong> and select the PC files to offer.</li>
+          <li>On your iPhone, run the <strong>Windows to iPhone Transfer</strong> Shortcut and scan this app's QR code.</li>
+          <li>Choose <strong>Get a file</strong>, select a file, then use <strong>Save File</strong> and confirm where to save it.</li>
+        </ol>
+        <p>Keep WindowsQR running until the download finishes. In the iPhone Files app, check the folder you chose; <strong>Recents</strong> is only a view of recent items, not the save location.</p>
+        <details>
+          <summary>Set up the file transfer Shortcut</summary>
+          <p>After scanning the QR code, append <code>api/iphone-files</code> to the scanned URL. Use <strong>Get Contents of URL</strong> (GET), get the <code>files</code> dictionary value, choose a file, get its <code>download_url</code>, fetch that URL with GET, then pass the downloaded result to <strong>Save File</strong>.</p>
+        </details>
+      </section>
+
+      <section>
+        <h2>Send images or files (iOS Clipboard) to Windows Clipboard</h2>
+        <p>Copy an image or file on your iPhone, then touch and hold the box below and choose Paste.</p>
+        <div id="clipboardFiles" contenteditable="true" role="textbox" aria-label="Paste copied images or files" data-placeholder="Touch and hold here, then Paste"></div>
+        <p id="clipboardSelection" role="status">No image or file pasted.</p>
+        <button id="sendClipboardFiles" disabled>Send to Windows Clipboard</button>
+        <p>After sending, press Ctrl+V in a Windows app for an image, or in File Explorer for files.</p>
+        <details><summary>iOS won't paste your image or file?</summary>
+          <p>Some iOS apps do not share copied files with Safari. Use an Apple Shortcut: Get Clipboard → Scan QR or Barcode → Text: scanned URL followed by <code>clipboard/files</code> → Get Contents of URL (POST, Form, key <code>file</code>, type File, value Clipboard).</p>
+          <p>The QR address already ends with a slash. Use the Clipboard variable as the file value, not the QR result. You can also send a shared file using Shortcut Input as the value.</p>
+        </details>
+      </section>
+
+      <section>
+        <h2>Send copied text</h2>
+        <textarea id="clipboardText" placeholder="Paste text here"></textarea>
+        <button id="sendClipboard">Send to Windows Clipboard</button>
+      </section>
+
+      <div style="margin-top:12px">
+        <div class="progress"><div id="bar" class="bar"></div></div>
+        <div id="status" style="margin-top:8px"></div>
+      </div>
+
+      <h3 style="margin-top:18px">Saved to</h3>
+      <div id="folder">{{ transfer_folder }}</div>
+
+      <h3 style="margin-top:18px">Recent</h3>
+      <ul id="recent"></ul>
+    </div>
+
+    <script>
+      const fileEl = document.getElementById('file');
+      const uploadBtn = document.getElementById('upload');
+      const clipboardFiles = document.getElementById('clipboardFiles');
+      const clipboardSelection = document.getElementById('clipboardSelection');
+      const sendClipboardFiles = document.getElementById('sendClipboardFiles');
+      let pastedFiles = [];
+      const clipboardText = document.getElementById('clipboardText');
+      const sendClipboardBtn = document.getElementById('sendClipboard');
+      const bar = document.getElementById('bar');
+      const status = document.getElementById('status');
+      const recent = document.getElementById('recent');
+
+      function uploadFile(file) {
+        if (!file) return alert('Choose a file');
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload');
+        xhr.upload.onprogress = e => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            bar.style.width = pct + '%';
+            status.textContent = pct + '% uploading';
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            status.textContent = 'Upload complete';
+            bar.style.width = '100%';
+            try {
+              const r = JSON.parse(xhr.responseText);
+              const li = document.createElement('li');
+              li.textContent = r.filename;
+              recent.prepend(li);
+            } catch(e){}
+          } else {
+            status.textContent = 'Upload failed';
+          }
+        };
+        const form = new FormData();
+        form.append('file', file);
+        xhr.send(form);
+      }
+
+      uploadBtn.addEventListener('click', () => uploadFile(fileEl.files[0]));
+      clipboardFiles.addEventListener('paste', event => {
+        event.preventDefault();
+        pastedFiles = Array.from(event.clipboardData?.files || []);
+        clipboardFiles.textContent = pastedFiles.map(file => file.name).join(', ');
+        clipboardSelection.textContent = pastedFiles.length
+          ? `${pastedFiles.length} item(s) ready to send.`
+          : 'No image or file was provided by iOS. See the Shortcut instructions below, or use Send copied text for text.';
+        sendClipboardFiles.disabled = !pastedFiles.length;
+      });
+      clipboardFiles.addEventListener('input', () => {
+        pastedFiles = [];
+        sendClipboardFiles.disabled = true;
+        clipboardSelection.textContent = 'Paste an image or file to send.';
+      });
+      sendClipboardFiles.addEventListener('click', async () => {
+        if (!pastedFiles.length) return;
+        sendClipboardFiles.disabled = true;
+        clipboardFiles.contentEditable = 'false';
+        status.textContent = 'Sending to Windows Clipboard…';
+        try {
+          const form = new FormData();
+          pastedFiles.forEach(file => form.append('file', file, file.name || 'clipboard.png'));
+          const response = await fetch('/clipboard/files', {method: 'POST', body: form});
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || 'Clipboard transfer failed');
+          status.textContent = 'Copied to Windows Clipboard. Press Ctrl+V on Windows to paste.';
+          const li = document.createElement('li');
+          li.textContent = 'Windows Clipboard: ' + result.filenames.join(', ');
+          recent.prepend(li);
+        } catch (error) {
+          status.textContent = error.message || 'Could not reach Windows clipboard service';
+        } finally {
+          clipboardFiles.contentEditable = 'true';
+          sendClipboardFiles.disabled = !pastedFiles.length;
+        }
+      });
+
+      sendClipboardBtn.addEventListener('click', async () => {
+        const text = clipboardText.value;
+        if (!text) return alert('Paste or type some text first');
+        sendClipboardBtn.disabled = true;
+        try {
+          const response = await fetch('/clipboard', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text})
+          });
+          const result = await response.json();
+          status.textContent = response.ok ? 'Text copied to Windows Clipboard' : result.error;
+        } catch (error) {
+          status.textContent = 'Could not reach Windows clipboard service';
+        } finally {
+          sendClipboardBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
