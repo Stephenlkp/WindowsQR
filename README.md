@@ -44,6 +44,14 @@ Clipboard images and files
 - In Parallels Desktop, use **Bridged Network** so the VM receives an address on the same LAN as the iPhone. A `10.211.x.x` Shared Network address is usually only reachable from the Mac host. The app prints the address used in the QR code when it starts.
 - If the VM has multiple network adapters, set the reachable VM address explicitly in PowerShell before starting: `$env:QR_HOST = '192.168.x.x'`. The iPhone page provides file selection and upload; folder changes remain desktop controls because the destination folder is on the VM.
 
+Remote access from cellular with Cloudflare Quick Tunnel
+
+- Install `cloudflared` on the PC from [Cloudflare's download page](https://developers.cloudflare.com/tunnel/downloads/). It is not bundled with WindowsQR.
+- Click **Start Secure Cellular Tunnel** and enter the email address that should be allowed. Cloudflare sends that address a one-time PIN. Scan the updated QR code with the iPhone and complete the sign-in in Safari.
+- Quick Tunnels provide a free, temporary HTTPS URL without a Cloudflare account or domain. The URL changes each time and stops working when the tunnel or WindowsQR closes; Cloudflare does not guarantee uptime. Keep WindowsQR running while transferring.
+- Use this only if your company permits Cloudflare Tunnel. Traffic is relayed through Cloudflare. The tunnel requires email authentication; the existing local-network address remains unauthenticated and should only be used on a trusted network.
+- Cloudflare's email sign-in requires an interactive browser. Shortcut-based API requests may not authenticate through a Quick Tunnel; use the web page in Safari for cellular transfers.
+
 Windows to iPhone REST API
 
 To make files from anywhere on the PC available for transfer, click **Choose Files for iPhone** in the WindowsQR desktop window and select them. Only files you choose this way are exposed to this transfer list. Use **Remove Selected** to stop offering a file. The selected files are not copied; their original paths must remain accessible until the iPhone downloads them.

@@ -3,7 +3,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 import app
@@ -116,6 +116,26 @@ class ClipboardTests(unittest.TestCase):
 
                 missing = client.get('/iphone-download/not-selected')
                 self.assertEqual(missing.status_code, 404)
+
+
+class TunnelTests(unittest.TestCase):
+    def test_tunnel_output_reports_quick_tunnel_url_and_exit(self):
+        while not app.TUNNEL_EVENTS.empty():
+            app.TUNNEL_EVENTS.get()
+        process = Mock()
+        process.stdout = io.StringIO(
+            'Quick Tunnel created: https://example-123.trycloudflare.com\n')
+        process.wait.return_value = 0
+
+        app.read_tunnel_output(process)
+
+        ready = app.TUNNEL_EVENTS.get_nowait()
+        exited = app.TUNNEL_EVENTS.get_nowait()
+        self.assertEqual(ready['type'], 'ready')
+        self.assertIs(ready['process'], process)
+        self.assertEqual(ready['url'], 'https://example-123.trycloudflare.com')
+        self.assertEqual(exited['type'], 'exited')
+        self.assertEqual(exited['returncode'], 0)
 
 
 if __name__ == '__main__':

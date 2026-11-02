@@ -1,5 +1,8 @@
 import os
+import re
+import shutil
 import socket
+import subprocess
 import threading
 import tempfile
 import uuid
@@ -7,17 +10,21 @@ from pathlib import Path
 from windows_clipboard import copy_files
 from queue import Queue
 from flask import Flask, render_template, request, send_file, send_from_directory, jsonify, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 import qrcode
 from io import BytesIO
 from PIL import Image, ImageTk
 import pyperclip
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 UPLOAD_QUEUE = Queue()
+TUNNEL_EVENTS = Queue()
 OUTGOING_FILES = {}
 OUTGOING_FILES_LOCK = threading.Lock()
+TUNNEL_URL_PATTERN = re.compile(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com')
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
@@ -165,6 +172,28 @@ def run_flask(port=0):
     app.run(host='0.0.0.0', port=port, threaded=True)
 
 
+def read_tunnel_output(process):
+    last_output = ''
+    if process.stdout is not None:
+        for line in process.stdout:
+            last_output = line.strip()
+            match = TUNNEL_URL_PATTERN.search(line)
+            if match:
+                TUNNEL_EVENTS.put({
+                    'process': process,
+                    'type': 'ready',
+                    'url': match.group(0),
+                })
+        process.stdout.close()
+    return_code = process.wait()
+    TUNNEL_EVENTS.put({
+        'process': process,
+        'type': 'exited',
+        'returncode': return_code,
+        'output': last_output,
+    })
+
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok'})
@@ -178,6 +207,10 @@ class QRApp:
         self.url_var = tk.StringVar()
         self.status_list = []
         self.outgoing_file_ids = []
+        self.tunnel_url = None
+        self.tunnel_process = None
+        self.tunnel_server = None
+        self.tunnel_thread = None
 
         self.frame = ttk.Frame(self.root, padding=12)
         self.frame.grid()
@@ -209,28 +242,143 @@ class QRApp:
         self.open_btn = ttk.Button(self.frame, text='Open Folder', command=self.open_folder)
         self.open_btn.grid(row=2, column=1, sticky='ew', pady=8)
 
+        self.start_tunnel_btn = ttk.Button(
+            self.frame, text='Start Secure Cellular Tunnel', command=self.start_tunnel)
+        self.start_tunnel_btn.grid(row=7, column=0, sticky='ew', pady=8)
+        self.stop_tunnel_btn = ttk.Button(
+            self.frame, text='Stop Tunnel', command=self.stop_tunnel, state='disabled')
+        self.stop_tunnel_btn.grid(row=7, column=1, sticky='ew', pady=8)
+
         self.update_qr()
         self.poll_queue()
+        self.root.protocol('WM_DELETE_WINDOW', self.close)
 
     def update_qr(self):
-        ip = get_local_ip()
-        url = f'http://{ip}:{self.port}/'
-        # show URL in the GUI for debugging (useful when default port is busy)
+        if self.tunnel_url:
+            url = self.tunnel_url
+        else:
+            ip = get_local_ip()
+            url = f'http://{ip}:{self.port}/'
         self.url_var.set(url)
         qr = qrcode.make(url)
         qr = qr.resize((300, 300), Image.NEAREST)
         self.qr_img = ImageTk.PhotoImage(qr)
         self.qr_label.config(image=self.qr_img)
 
+    def start_tunnel(self):
+        if self.tunnel_process is not None:
+            return
+        if not messagebox.askyesno(
+                'Start secure cellular tunnel',
+                'This uses Cloudflare to relay traffic from the internet to this app. '
+                'Only continue if your company allows it. Access will require a one-time '
+                'PIN sent to the email address you allow.',
+                parent=self.root):
+            return
+
+        cloudflared = shutil.which('cloudflared')
+        if cloudflared is None:
+            messagebox.showerror(
+                'cloudflared not found',
+                'Install cloudflared from https://developers.cloudflare.com/tunnel/downloads/, '
+                'then restart WindowsQR.',
+                parent=self.root)
+            return
+
+        allowed_mail = simpledialog.askstring(
+            'Allow iPhone access',
+            'Enter the email address allowed to access the tunnel. '
+            'Multiple addresses may be comma-separated.',
+            parent=self.root)
+        if allowed_mail is None:
+            return
+        allowed_emails = [email.strip() for email in allowed_mail.split(',')]
+        if any(not email or '@' not in email or any(char.isspace() for char in email)
+               for email in allowed_emails):
+            messagebox.showerror(
+                'Invalid email address',
+                'Enter one or more email addresses separated by commas.',
+                parent=self.root)
+            return
+
+        try:
+            tunnel_server = make_server(
+                '127.0.0.1',
+                0,
+                ProxyFix(app.wsgi_app, x_for=0, x_proto=1, x_host=1),
+                threaded=True)
+        except OSError as exc:
+            messagebox.showerror('Could not start tunnel service', str(exc), parent=self.root)
+            return
+
+        self.tunnel_server = tunnel_server
+        self.tunnel_thread = threading.Thread(target=tunnel_server.serve_forever, daemon=True)
+        self.tunnel_thread.start()
+        command = [
+            cloudflared,
+            'tunnel',
+            '--url',
+            f'http://127.0.0.1:{tunnel_server.server_port}',
+            '--allowed-mail',
+            ','.join(allowed_emails),
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1)
+        except OSError as exc:
+            self._stop_tunnel_server()
+            messagebox.showerror('Could not start cloudflared', str(exc), parent=self.root)
+            return
+
+        self.tunnel_process = process
+        self.start_tunnel_btn.config(state='disabled')
+        self.stop_tunnel_btn.config(state='normal')
+        self.add_status('Starting Cloudflare Quick Tunnel; waiting for its URL.')
+        threading.Thread(target=read_tunnel_output, args=(process,), daemon=True).start()
+
+    def _stop_tunnel_server(self):
+        if self.tunnel_server is not None:
+            self.tunnel_server.shutdown()
+            self.tunnel_server.server_close()
+            self.tunnel_server = None
+            self.tunnel_thread = None
+
+    def stop_tunnel(self):
+        process = self.tunnel_process
+        self.tunnel_process = None
+        self.tunnel_url = None
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        self._stop_tunnel_server()
+        self.start_tunnel_btn.config(state='normal')
+        self.stop_tunnel_btn.config(state='disabled')
+        self.update_qr()
+        self.add_status('Cloudflare tunnel stopped; local network QR restored.')
+
+    def close(self):
+        self.stop_tunnel()
+        self.root.destroy()
+
     def change_folder(self):
         global transfer_folder
-        new = filedialog.askdirectory(initialdir=transfer_folder)
+        new = filedialog.askdirectory(initialdir=transfer_folder, parent=self.root)
         if new:
             transfer_folder = new
             self.add_status(f'Transfer folder changed: {transfer_folder}')
 
     def choose_outgoing_files(self):
-        paths = filedialog.askopenfilenames(title='Choose files to make available to iPhone')
+        paths = filedialog.askopenfilenames(
+            title='Choose files to make available to iPhone',
+            parent=self.root)
         for selected_path in paths:
             path = Path(selected_path)
             if not path.is_file():
@@ -267,6 +415,19 @@ class QRApp:
         while not UPLOAD_QUEUE.empty():
             ev = UPLOAD_QUEUE.get()
             self.add_status(f"Received: {ev['filename']} -> {ev['path']}")
+        while not TUNNEL_EVENTS.empty():
+            event = TUNNEL_EVENTS.get()
+            if event['process'] is not self.tunnel_process:
+                continue
+            if event['type'] == 'ready':
+                self.tunnel_url = event['url'] + '/'
+                self.update_qr()
+                self.add_status('Secure cellular tunnel ready; scan the updated QR code.')
+            else:
+                detail = event['output'] or f"cloudflared exited with code {event['returncode']}"
+                self.stop_tunnel()
+                if event['returncode'] != 0:
+                    messagebox.showerror('Cloudflare tunnel stopped', detail, parent=self.root)
         self.root.after(500, self.poll_queue)
 
     def run(self):
