@@ -130,6 +130,38 @@ def release_tk_grabs(root):
         pass
 
 
+def find_cloudflared():
+    """Locate cloudflared even when a .app was launched without Homebrew on PATH.
+
+    Finder/Dock launches often use a minimal PATH (/usr/bin:/bin:...), so
+    shutil.which('cloudflared') misses /opt/homebrew/bin.
+    """
+    candidates = []
+    which_hit = shutil.which('cloudflared')
+    if which_hit:
+        candidates.append(which_hit)
+    # Homebrew (Apple Silicon), Intel Homebrew, and common manual installs.
+    candidates.extend([
+        '/opt/homebrew/bin/cloudflared',
+        '/usr/local/bin/cloudflared',
+        str(Path.home() / 'bin' / 'cloudflared'),
+    ])
+    # Also search with an augmented PATH in case only the env is incomplete.
+    brew_path = '/opt/homebrew/bin:/usr/local/bin:' + os.environ.get('PATH', '')
+    which_brew = shutil.which('cloudflared', path=brew_path)
+    if which_brew:
+        candidates.append(which_brew)
+
+    seen = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
 @app.route('/')
 def index():
     ip = get_local_ip()
@@ -553,15 +585,17 @@ class QRApp:
             self._clear_dialog_focus()
             return
 
-        cloudflared = shutil.which('cloudflared')
+        cloudflared = find_cloudflared()
         if cloudflared is None:
             messagebox.showerror(
                 'cloudflared not found',
-                'Install cloudflared (for example: brew install cloudflared), '
+                'Install cloudflared (for example: brew install cloudflared).\n\n'
+                'Expected at /opt/homebrew/bin/cloudflared or /usr/local/bin/cloudflared, '
                 'then restart QR AirDrop.',
                 parent=self.root)
             self._clear_dialog_focus()
             return
+        self.add_status(f'Using cloudflared: {cloudflared}')
 
         # Cloudflare's Quick Tunnel email PIN currently breaks POST uploads (401) after the
         # page loads — a known cloudflared bug. Default to URL-only access for reliable transfers.
