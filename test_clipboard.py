@@ -1,4 +1,5 @@
 import io
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -17,7 +18,7 @@ class ClipboardTests(unittest.TestCase):
             Image.new('RGB', (3, 2), 'red').save(path)
             formats = dict(clipboard_formats([str(path)]))
             self.assertEqual(struct.unpack('<IiiII', formats[15][:20]), (20, 0, 0, 0, 1))
-            self.assertEqual(formats[15][20:].decode('utf-16le'), str(path.resolve()) + '\0\0')
+            self.assertEqual(formats[15][20:].decode('utf-16le'), os.path.abspath(path) + '\0\0')
             self.assertEqual(struct.unpack_from('<ii', formats[8], 4), (3, 2))
             other = Path(directory) / 'notes.txt'
             other.write_text('hello')
@@ -33,23 +34,31 @@ class ClipboardTests(unittest.TestCase):
                 paths = copy.call_args.args[0]
                 self.assertEqual([Path(p).read_bytes() for p in paths], [b'first', b'second'])
                 self.assertEqual(response.json['filenames'], ['same.txt', 'same.txt'])
+                self.assertEqual(response.json['destination'], 'clipboard')
 
-    def test_missing_file_and_clipboard_failure(self):
+    def test_missing_file_and_clipboard_fallback_to_folder(self):
         client = app.app.test_client()
         self.assertEqual(client.post('/clipboard/files').status_code, 400)
-        with tempfile.TemporaryDirectory() as directory:
-            with patch.object(app.tempfile, 'mkdtemp', return_value=directory), patch.object(app, 'copy_files', side_effect=OSError('busy')):
-                response = client.post('/clipboard/files', data={'file': (io.BytesIO(b'a'), 'a.txt')})
-                self.assertEqual(response.status_code, 500)
-                self.assertIn('busy', response.json['error'])
+        with tempfile.TemporaryDirectory() as staging, tempfile.TemporaryDirectory() as transfer:
+            previous_folder = app.transfer_folder
+            app.transfer_folder = transfer
+            try:
+                with patch.object(app.tempfile, 'mkdtemp', return_value=staging), patch.object(app, 'copy_files', side_effect=OSError('busy')):
+                    response = client.post('/clipboard/files', data={'file': (io.BytesIO(b'a'), 'a.txt')})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json['destination'], 'folder')
+                    self.assertEqual(response.json['filenames'], ['a.txt'])
+                    self.assertEqual((Path(transfer) / 'a.txt').read_bytes(), b'a')
+            finally:
+                app.transfer_folder = previous_folder
 
     def test_page_and_existing_text_clipboard(self):
         client = app.app.test_client()
         page = client.get('/').get_data(as_text=True)
         self.assertNotIn('Send a screenshot', page)
-        self.assertIn('iOS Clipboard', page)
-        self.assertIn('Receive a file from Windows', page)
-        self.assertIn('Recents', page)
+        self.assertIn('Send images or files to', page)
+        self.assertIn('Receive a file from', page)
+        self.assertIn('Choose Files for Phone', page)
         with patch.object(app.pyperclip, 'copy') as copy:
             self.assertEqual(client.post('/clipboard', json={'text': 'hello'}).status_code, 200)
             copy.assert_called_once_with('hello')
@@ -104,7 +113,10 @@ class ClipboardTests(unittest.TestCase):
                 self.assertEqual(item['id'], file_id)
                 self.assertEqual(item['name'], path.name)
                 self.assertEqual(item['size'], path.stat().st_size)
-                self.assertTrue(item['download_url'].endswith('/iphone-download/' + file_id))
+                self.assertTrue(
+                    item['download_url'].endswith('/phone-download/' + file_id)
+                    or item['download_url'].endswith('/iphone-download/' + file_id)
+                )
 
                 download = client.get(item['download_url'])
                 try:
@@ -113,6 +125,13 @@ class ClipboardTests(unittest.TestCase):
                     self.assertIn('attachment', download.headers['Content-Disposition'])
                 finally:
                     download.close()
+
+                legacy = client.get('/iphone-download/' + file_id)
+                try:
+                    self.assertEqual(legacy.status_code, 200)
+                    self.assertEqual(legacy.data, b'send this to iPhone')
+                finally:
+                    legacy.close()
 
                 missing = client.get('/iphone-download/not-selected')
                 self.assertEqual(missing.status_code, 404)

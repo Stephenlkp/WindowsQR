@@ -19,9 +19,12 @@
   <body>
     <div class="container">
       <h1>QR AirDrop</h1>
-      <p>Send Files, Screenshots, or copied text TO or FROM Windows.</p>
-      <p>Works with iOS Apple Shortcut <strong>Send to Windows</strong> &amp; <strong>Windows To iPhone Transfer</strong>. If you want a copy, please send email to request.</p>
+      <p>Send files, screenshots, or copied text between your phone and this {{ host_label }}.</p>
+      <p>Works with Android browsers and iOS Shortcuts. Optional iOS Shortcut names: <strong>Send to Computer</strong> &amp; <strong>Computer To Phone Transfer</strong>.</p>
       <p>Created by: Stephen | +60167222208 | <a href="mailto:9w2lkp@gmail.com">9w2lkp@gmail.com</a></p>
+      <p id="tunnelHint" style="display:none;background:#fff3cd;border:1px solid #f0d78c;border-radius:8px;padding:12px">
+        You are on a Cloudflare tunnel. If uploads show <strong>401 Unauthorized</strong>, restart the tunnel on the Mac and choose <strong>No</strong> for Email PIN, then reload this page.
+      </p>
 
       <section>
         <h2>Send a file</h2>
@@ -31,36 +34,40 @@
       </section>
 
       <section>
-        <h2>Receive a file from Windows</h2>
+        <h2>Receive a file from {{ host_label }}</h2>
         <ol>
-          <li>In the WindowsQR desktop window, choose <strong>Choose Files for iPhone</strong> and select the PC files to offer.</li>
-          <li>On your iPhone, run the <strong>Windows to iPhone Transfer</strong> Shortcut and scan this app's QR code.</li>
-          <li>Choose <strong>Get a file</strong>, select a file, then use <strong>Save File</strong> and confirm where to save it.</li>
+          <li>In the QR AirDrop desktop window, choose <strong>Choose Files for Phone</strong> and select the files to offer.</li>
+          <li>On your phone, open <code>/api/phone-files</code> from this app's URL (iPhone Shortcuts can scan the QR and append that path).</li>
+          <li>Choose a file, download it, then save it where you want.</li>
         </ol>
-        <p>Keep WindowsQR running until the download finishes. In the iPhone Files app, check the folder you chose; <strong>Recents</strong> is only a view of recent items, not the save location.</p>
+        <p>Keep QR AirDrop running until the download finishes.</p>
         <details>
-          <summary>Set up the file transfer Shortcut</summary>
-          <p>After scanning the QR code, append <code>api/iphone-files</code> to the scanned URL. Use <strong>Get Contents of URL</strong> (GET), get the <code>files</code> dictionary value, choose a file, get its <code>download_url</code>, fetch that URL with GET, then pass the downloaded result to <strong>Save File</strong>.</p>
+          <summary>Set up an iPhone Shortcut</summary>
+          <p>After scanning the QR code, append <code>api/phone-files</code> (or the older <code>api/iphone-files</code>) to the scanned URL. Use <strong>Get Contents of URL</strong> (GET), get the <code>files</code> dictionary value, choose a file, get its <code>download_url</code>, fetch that URL with GET, then pass the downloaded result to <strong>Save File</strong>.</p>
         </details>
       </section>
 
       <section>
-        <h2>Send images or files (iOS Clipboard) to Windows Clipboard</h2>
-        <p>Copy an image or file on your iPhone, then touch and hold the box below and choose Paste.</p>
-        <div id="clipboardFiles" contenteditable="true" role="textbox" aria-label="Paste copied images or files" data-placeholder="Touch and hold here, then Paste"></div>
+        <h2>Send images or files to {{ host_label }}</h2>
+        <p>Copy an image or file on your phone, then paste into the box below.</p>
+        <div id="clipboardFiles" contenteditable="true" role="textbox" aria-label="Paste copied images or files" data-placeholder="Paste image or file here"></div>
         <p id="clipboardSelection" role="status">No image or file pasted.</p>
-        <button id="sendClipboardFiles" disabled>Send to Windows Clipboard</button>
-        <p>After sending, press Ctrl+V in a Windows app for an image, or in File Explorer for files.</p>
-        <details><summary>iOS won't paste your image or file?</summary>
-          <p>Some iOS apps do not share copied files with Safari. Use an Apple Shortcut: Get Clipboard → Scan QR or Barcode → Text: scanned URL followed by <code>clipboard/files</code> → Get Contents of URL (POST, Form, key <code>file</code>, type File, value Clipboard).</p>
-          <p>The QR address already ends with a slash. Use the Clipboard variable as the file value, not the QR result. You can also send a shared file using Shortcut Input as the value.</p>
+        <button id="sendClipboardFiles" disabled>Send to {{ host_label }}</button>
+        {% if supports_file_clipboard %}
+        <p>After sending, press {{ paste_shortcut }} on {{ host_label }} to paste. If clipboard paste is unavailable, files are saved to the transfer folder instead.</p>
+        {% else %}
+        <p>Files are saved to the transfer folder on this computer.</p>
+        {% endif %}
+        <details><summary>Phone won't paste your image or file?</summary>
+          <p>Some apps do not share copied files with the browser. On iPhone, use an Apple Shortcut: Get Clipboard → Scan QR or Barcode → Text: scanned URL followed by <code>clipboard/files</code> → Get Contents of URL (POST, Form, key <code>file</code>, type File, value Clipboard).</p>
+          <p>The QR address already ends with a slash. Use the Clipboard variable as the file value, not the QR result. You can also send a shared file using Shortcut Input as the value. On Android, use <strong>Send a file</strong> above if paste is blocked.</p>
         </details>
       </section>
 
       <section>
         <h2>Send copied text</h2>
         <textarea id="clipboardText" placeholder="Paste text here"></textarea>
-        <button id="sendClipboard">Send to Windows Clipboard</button>
+        <button id="sendClipboard">Send to {{ host_label }} Clipboard</button>
       </section>
 
       <div style="margin-top:12px">
@@ -76,6 +83,12 @@
     </div>
 
     <script>
+      const hostLabel = {{ host_label|tojson }};
+      const pasteShortcut = {{ paste_shortcut|tojson }};
+      if (location.hostname.endsWith('trycloudflare.com')) {
+        const hint = document.getElementById('tunnelHint');
+        if (hint) hint.style.display = 'block';
+      }
       const fileEl = document.getElementById('file');
       const uploadBtn = document.getElementById('upload');
       const clipboardFiles = document.getElementById('clipboardFiles');
@@ -109,10 +122,25 @@
               li.textContent = r.filename;
               recent.prepend(li);
             } catch(e){}
+          } else if (xhr.status === 401) {
+            status.textContent = 'Upload failed (401): Cloudflare email PIN session expired or blocked this POST. Reload this page and sign in again, or restart the tunnel without Email PIN (recommended for uploads).';
           } else {
-            status.textContent = 'Upload failed';
+            let detail = '';
+            try {
+              detail = (JSON.parse(xhr.responseText).error) || xhr.responseText;
+            } catch (e) {
+              detail = xhr.responseText || xhr.statusText;
+            }
+            status.textContent = `Upload failed (${xhr.status})${detail ? ': ' + detail : ''}`;
           }
         };
+        xhr.onerror = () => {
+          status.textContent = 'Upload failed: network error (tunnel may have dropped the response)';
+        };
+        xhr.ontimeout = () => {
+          status.textContent = 'Upload failed: timed out';
+        };
+        xhr.withCredentials = true;
         const form = new FormData();
         form.append('file', file);
         xhr.send(form);
@@ -125,7 +153,7 @@
         clipboardFiles.textContent = pastedFiles.map(file => file.name).join(', ');
         clipboardSelection.textContent = pastedFiles.length
           ? `${pastedFiles.length} item(s) ready to send.`
-          : 'No image or file was provided by iOS. See the Shortcut instructions below, or use Send copied text for text.';
+          : 'No image or file was provided. See the Shortcut instructions below, or use Send a file / Send copied text.';
         sendClipboardFiles.disabled = !pastedFiles.length;
       });
       clipboardFiles.addEventListener('input', () => {
@@ -137,19 +165,26 @@
         if (!pastedFiles.length) return;
         sendClipboardFiles.disabled = true;
         clipboardFiles.contentEditable = 'false';
-        status.textContent = 'Sending to Windows Clipboard…';
+        status.textContent = `Sending to ${hostLabel}…`;
         try {
           const form = new FormData();
           pastedFiles.forEach(file => form.append('file', file, file.name || 'clipboard.png'));
-          const response = await fetch('/clipboard/files', {method: 'POST', body: form});
+          const response = await fetch('/clipboard/files', {method: 'POST', body: form, credentials: 'include'});
+          if (response.status === 401) {
+            throw new Error('Cloudflare email PIN blocked this request (401). Reload and sign in, or restart the tunnel without Email PIN.');
+          }
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || 'Clipboard transfer failed');
-          status.textContent = 'Copied to Windows Clipboard. Press Ctrl+V on Windows to paste.';
+          if (result.destination === 'folder') {
+            status.textContent = `Saved to transfer folder: ${result.location}`;
+          } else {
+            status.textContent = `Copied to ${hostLabel} clipboard. Press ${pasteShortcut} to paste.`;
+          }
           const li = document.createElement('li');
-          li.textContent = 'Windows Clipboard: ' + result.filenames.join(', ');
+          li.textContent = (result.destination === 'folder' ? 'Saved: ' : 'Clipboard: ') + result.filenames.join(', ');
           recent.prepend(li);
         } catch (error) {
-          status.textContent = error.message || 'Could not reach Windows clipboard service';
+          status.textContent = error.message || 'Could not reach clipboard service';
         } finally {
           clipboardFiles.contentEditable = 'true';
           sendClipboardFiles.disabled = !pastedFiles.length;
@@ -164,12 +199,17 @@
           const response = await fetch('/clipboard', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({text})
+            body: JSON.stringify({text}),
+            credentials: 'include'
           });
+          if (response.status === 401) {
+            status.textContent = 'Cloudflare email PIN blocked this request (401). Reload and sign in, or restart the tunnel without Email PIN.';
+            return;
+          }
           const result = await response.json();
-          status.textContent = response.ok ? 'Text copied to Windows Clipboard' : result.error;
+          status.textContent = response.ok ? `Text copied to ${hostLabel} clipboard` : result.error;
         } catch (error) {
-          status.textContent = 'Could not reach Windows clipboard service';
+          status.textContent = 'Could not reach clipboard service';
         } finally {
           sendClipboardBtn.disabled = false;
         }
