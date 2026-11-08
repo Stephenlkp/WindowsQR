@@ -32,7 +32,22 @@ _LOCAL_IP_LOCK = threading.Lock()
 _LOCAL_IP_TTL_SEC = 30.0
 STATUS_LIST_LIMIT = 50
 
-app = Flask(__name__, static_folder='static', template_folder='templates')
+
+def app_base_dir():
+    """Project root normally; PyInstaller extract dir when frozen as a Mac/Windows app."""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent
+
+
+_BASE_DIR = app_base_dir()
+_TEMPLATE_DIR = _BASE_DIR / 'templates'
+_STATIC_DIR = _BASE_DIR / 'static'
+app = Flask(
+    __name__,
+    template_folder=str(_TEMPLATE_DIR),
+    static_folder=str(_STATIC_DIR) if _STATIC_DIR.is_dir() else None,
+)
 
 # Default transfer folder (Downloads)
 DEFAULT_FOLDER = os.path.join(os.path.expanduser('~'), 'Downloads')

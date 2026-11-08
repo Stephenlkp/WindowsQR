@@ -20,7 +20,20 @@ pip install -r requirements.txt
 python app.py
 ```
 
+On macOS you can also double-click `run_mac.command`, or use the standalone app below.
+
 3. Scan the QR with your phone camera — the page lets you choose a file and upload. Upload progress is shown in the browser and the file is saved to your `Downloads` folder by default. The desktop window shows recent transfers.
+
+Packaging a standalone macOS `.app`
+
+Build on an Apple Silicon or Intel Mac (the result matches that Mac’s architecture):
+
+```bash
+./build_mac.sh
+open "dist/QR AirDrop.app"
+```
+
+This bundles Python, Flask, Pillow, qrcode, Tk, and templates into `dist/QR AirDrop.app` (~38MB). No virtualenv is required to run it. Drag the app into **Applications** if you want. The first launch of an unsigned build may need **Right-click → Open** in Finder (Gatekeeper). `cloudflared` is still separate — install with `brew install cloudflared` if you use the cellular tunnel.
 
 Packaging to a Windows `.exe`
 
@@ -28,10 +41,14 @@ Build on a Windows machine (recommended) using PyInstaller:
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --add-data "templates;templates" app.py
+pyinstaller --noconfirm WindowsQR.spec
 ```
 
-On macOS you can package similarly with PyInstaller (`:` as the data separator) if you need a `.app` bundle.
+Or a one-file build:
+
+```bash
+pyinstaller --onefile --windowed --add-data "templates;templates" --name WindowsQR app.py
+```
 
 Notes
 
